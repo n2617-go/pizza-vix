@@ -59,7 +59,6 @@ st.markdown("""
 # --- 4. 核心數據抓取邏輯 ---
 
 def get_pizza_intel(progress_bar):
-    """披薩指數 OCR 邏輯"""
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
@@ -82,30 +81,38 @@ def get_pizza_intel(progress_bar):
         return None, None
 
 def fetch_market_data():
-    """三大市場恐慌指數抓取 - 強化版"""
+    """三大市場恐慌指數抓取 - 雙重備援版"""
     v_us, v_tw, v_crypto = "N/A", "N/A", "N/A"
     errors = []
     
-    # 1. 美股 VIX (yfinance)
+    # 1. 美股 VIX
     try:
         vix_ticker = yf.Ticker("^VIX")
-        hist_us = vix_ticker.history(period="7d")
+        hist_us = vix_ticker.history(period="5d")
         if not hist_us.empty:
             v_us = round(hist_us['Close'].iloc[-1], 2)
     except Exception as e:
         errors.append(f"美股 VIX 失敗: {e}")
 
-    # 2. 臺指 VIXTWN (FinMind) - 擴大搜尋範圍至 30 天
+    # 2. 臺指 VIXTWN (FinMind 為主，Yahoo 為輔)
     try:
+        # A 方案: FinMind
         dl = DataLoader()
         start_dt = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         df_tw = dl.taiwan_stock_index_vix(index_id='VIXTWN', start_date=start_dt)
         if not df_tw.empty:
             v_tw = round(df_tw['vix'].iloc[-1], 2)
+        else:
+            # B 方案: yfinance 備援 (代號 ^VIXTWN)
+            tw_vix_yf = yf.Ticker("^VIXTWN").history(period="10d")
+            if not tw_vix_yf.empty:
+                v_tw = round(tw_vix_yf['Close'].iloc[-1], 2)
+            else:
+                errors.append("台指 VIX: FinMind 與 Yahoo 均無回傳資料")
     except Exception as e:
-        errors.append(f"台指 VIXTWN 失敗: {e}")
+        errors.append(f"台指 VIXTWN 抓取過程錯誤: {e}")
 
-    # 3. 加密貨幣 F&G (Alternative.me)
+    # 3. 加密貨幣 F&G
     try:
         res = requests.get("https://api.alternative.me/fng/", timeout=15).json()
         v_crypto = res['data'][0]['value']
@@ -116,7 +123,6 @@ def fetch_market_data():
 
 # --- 5. 頁面呈現 ---
 st.markdown("<h1>🛡️ Global Intel Center</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center; color:#888;'>全球軍事與金融風險監控中心</p>", unsafe_allow_html=True)
 
 # 時間顯示
 now_tw = datetime.now(tz_tw)
@@ -128,69 +134,41 @@ st.markdown(f"""
     </div>
     """, unsafe_allow_html=True)
 
-# --- 披薩指標區塊 ---
+# 披薩區
 st.subheader("🍕 五角大廈披薩情報")
 saved_pizza = load_json(PIZZA_FILE, {"lvl": 1, "pct": 0.0, "update_time": "尚未更新"})
-
-if st.button("🛰️ 更新披薩指數 (OCR 掃描)"):
+if st.button("🛰️ 更新披薩指數"):
     bar = st.progress(0)
-    with st.spinner("衛星情報掃描中..."):
-        lvl, pct = get_pizza_intel(bar)
-        if lvl is not None:
-            save_json(PIZZA_FILE, {
-                "lvl": lvl, "pct": pct, 
-                "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")
-            })
-            st.toast("披薩情報更新成功", icon="✅")
-            st.rerun()
+    lvl, pct = get_pizza_intel(bar)
+    if lvl is not None:
+        save_json(PIZZA_FILE, {"lvl": lvl, "pct": pct, "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")})
+        st.rerun()
     bar.empty()
 
-st.markdown(f'<div class="update-tag">最後情報更新時間：{saved_pizza["update_time"]}</div>', unsafe_allow_html=True)
-st.markdown(f"""
-    <div class="dashboard-card">
-        <div style="display:flex; justify-content:space-around; align-items:center; text-align:center;">
-            <div style="flex:1;"><p class="market-label">DEFCON</p><p class="db-value" style="font-size:50px;margin:0;">{saved_pizza['lvl']}</p></div>
-            <div style="border-left:1px solid #333; height:40px;"></div>
-            <div style="flex:1;"><p class="market-label">PIZZA INDEX</p><p class="db-value" style="font-size:50px;margin:0;">{int(saved_pizza['pct'])}%</p></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+st.markdown(f"""<div class="dashboard-card"><div style="display:flex; justify-content:space-around; text-align:center;">
+    <div><p class="market-label">DEFCON</p><p class="db-value" style="font-size:50px;">{saved_pizza['lvl']}</p></div>
+    <div><p class="market-label">PIZZA INDEX</p><p class="db-value" style="font-size:50px;">{int(saved_pizza['pct'])}%</p></div>
+    </div><p class="update-tag">最後更新：{saved_pizza['update_time']}</p></div>""", unsafe_allow_html=True)
 
-# --- 市場指標區塊 ---
+# 市場區
 st.divider()
 st.subheader("📉 全球市場恐慌監控")
 saved_market = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"})
 
-if st.button("📊 更新市場恐慌情報 (API 抓取)"):
-    with st.spinner("正在串接全球金融數據..."):
+if st.button("📊 更新市場恐慌情報"):
+    with st.spinner("抓取最新金融數據..."):
         v_us, v_tw, v_crypto, errors = fetch_market_data()
-        # 只要有一項成功就儲存
-        if v_us != "N/A" or v_tw != "N/A" or v_crypto != "N/A":
-            save_json(MARKET_FILE, {
-                "v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto,
-                "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")
-            })
-            st.toast("市場數據更新成功", icon="📈")
-            if errors:
-                with st.expander("部分數據抓取有誤"):
-                    for err in errors: st.write(err)
-            time.sleep(1)
+        if v_us != "N/A" or v_tw != "N/A":
+            save_json(MARKET_FILE, {"v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto, "update_time": datetime.now(tz_tw).strftime("%H:%M:%S")})
+            if errors: 
+                with st.expander("偵錯詳情"):
+                    for e in errors: st.write(e)
             st.rerun()
         else:
-            st.error("市場數據抓取失敗")
-            for err in errors: st.write(err)
-
-st.markdown(f'<div class="update-tag">最後市場更新時間：{saved_market["update_time"]}</div>', unsafe_allow_html=True)
+            for e in errors: st.error(e)
 
 m_col1, m_col2, m_col3 = st.columns(3)
-with m_col1:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;">'
-                f'<p class="market-label">美股 VIX</p><p class="db-value" style="font-size:32px;">{saved_market["v_us"]}</p></div>', unsafe_allow_html=True)
-with m_col2:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;">'
-                f'<p class="market-label">台指 VIXTWN</p><p class="db-value" style="font-size:32px;">{saved_market["v_tw"]}</p></div>', unsafe_allow_html=True)
-with m_col3:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;">'
-                f'<p class="market-label">加密 F&G</p><p class="db-value" style="font-size:32px;">{saved_market["v_crypto"]}</p></div>', unsafe_allow_html=True)
-
-st.caption("數據來源：Yahoo Finance, FinMind, Alternative.me")
+with m_col1: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">美股 VIX</p><p class="db-value" style="font-size:32px;">{saved_market["v_us"]}</p></div>', unsafe_allow_html=True)
+with m_col2: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">台指 VIXTWN</p><p class="db-value" style="font-size:32px;">{saved_market["v_tw"]}</p></div>', unsafe_allow_html=True)
+with m_col3: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">加密 F&G</p><p class="db-value" style="font-size:32px;">{saved_market["v_crypto"]}</p></div>', unsafe_allow_html=True)
+st.caption(f"數據最後更新：{saved_market['update_time']}")
