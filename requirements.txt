@@ -9,3 +9,4 @@ FinMind
 requests
 pandas
 tqdm
+lxml
