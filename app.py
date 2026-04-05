@@ -82,23 +82,23 @@ def get_pizza_intel(progress_bar):
         return None, None
 
 def fetch_market_data():
-    """三大市場恐慌指數抓取"""
+    """三大市場恐慌指數抓取 - 強化版"""
     v_us, v_tw, v_crypto = "N/A", "N/A", "N/A"
     errors = []
     
     # 1. 美股 VIX (yfinance)
     try:
         vix_ticker = yf.Ticker("^VIX")
-        hist = vix_ticker.history(period="5d")
-        if not hist.empty:
-            v_us = round(hist['Close'].iloc[-1], 2)
+        hist_us = vix_ticker.history(period="7d")
+        if not hist_us.empty:
+            v_us = round(hist_us['Close'].iloc[-1], 2)
     except Exception as e:
         errors.append(f"美股 VIX 失敗: {e}")
 
-    # 2. 臺指 VIXTWN (FinMind)
+    # 2. 臺指 VIXTWN (FinMind) - 擴大搜尋範圍至 30 天
     try:
         dl = DataLoader()
-        start_dt = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+        start_dt = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         df_tw = dl.taiwan_stock_index_vix(index_id='VIXTWN', start_date=start_dt)
         if not df_tw.empty:
             v_tw = round(df_tw['vix'].iloc[-1], 2)
@@ -164,24 +164,24 @@ saved_market = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto":
 if st.button("📊 更新市場恐慌情報 (API 抓取)"):
     with st.spinner("正在串接全球金融數據..."):
         v_us, v_tw, v_crypto, errors = fetch_market_data()
-        if v_us != "N/A" or v_tw != "N/A":
+        # 只要有一項成功就儲存
+        if v_us != "N/A" or v_tw != "N/A" or v_crypto != "N/A":
             save_json(MARKET_FILE, {
                 "v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto,
-                "update_time": datetime.now(tz_tw).strftime("%H:%M:%S")
+                "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")
             })
             st.toast("市場數據更新成功", icon="📈")
             if errors:
-                with st.expander("部分數據抓取有誤，請點此查看詳情"):
+                with st.expander("部分數據抓取有誤"):
                     for err in errors: st.write(err)
             time.sleep(1)
             st.rerun()
         else:
-            st.error("所有市場數據抓取皆失敗，請檢查網路或 Logs。")
+            st.error("市場數據抓取失敗")
             for err in errors: st.write(err)
 
 st.markdown(f'<div class="update-tag">最後市場更新時間：{saved_market["update_time"]}</div>', unsafe_allow_html=True)
 
-# 顯示三個市場卡片
 m_col1, m_col2, m_col3 = st.columns(3)
 with m_col1:
     st.markdown(f'<div class="dashboard-card" style="text-align:center;">'
