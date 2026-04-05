@@ -1,7 +1,10 @@
 streamlit
-pandas
-requests
+playwright
+pytesseract
+pillow
+plotly
+pytz
 yfinance
-streamlit-cookies-manager
-requests-cache
-cryptography
+FinMind
+requests
+pandas
