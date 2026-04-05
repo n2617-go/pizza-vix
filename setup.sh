@@ -1,0 +1,9 @@
+streamlit
+yfinance
+FinMind
+pandas
+requests
+pytz
+tqdm
+ta
+extra-streamlit-components
