@@ -82,72 +82,63 @@ def get_pizza_intel(progress_bar):
 
 def fetch_vixtwn():
     """
-    台指 VIXTWN 專屬抓取函數，三層備援：
-      A. 台灣期交所官網每日報表（HTML 解析，免費無需 key）
-      B. FinMind REST API /v4/data（dataset=TaiwanFuturesDaily, futures_id=VIX）
-      C. 回傳 None，由上層處理
+    台指 VIXTWN 專屬抓取函數（純 requests，不需額外套件）
+    兩層備援：
+      A. FinMind REST API - TaiwanFuturesDaily (data_id=VIX)
+      B. FinMind REST API - TaiwanVariousIndicators5Seconds (data_id=VIXTWN)
+    回傳: (數值 or None, 來源說明 or 錯誤訊息)
     """
-    # --- 方案 A：台灣期交所 VIX 每日行情 ---
-    try:
-        from bs4 import BeautifulSoup
-        url = "https://www.taifex.com.tw/cht/3/viXDailyMarketReport"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=15)
-        res.encoding = "utf-8"
-        soup = BeautifulSoup(res.text, "html.parser")
-        # 找第一個含數字的 table row（最新一日）
-        tables = soup.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            for row in rows[1:]:  # 跳過 header
-                cols = [c.get_text(strip=True) for c in row.find_all("td")]
-                # 期交所格式：日期 | 收盤價 | 漲跌 | ...
-                # 收盤價通常在第 2 欄（index 1）
-                if len(cols) >= 2:
-                    val_str = cols[1].replace(",", "")
-                    try:
-                        val = float(val_str)
-                        if 5 < val < 200:   # 合理 VIX 範圍過濾
-                            return round(val, 2), "期交所"
-                    except ValueError:
-                        continue
-    except Exception:
-        pass
+    base_url = "https://api.finmindtrade.com/api/v4/data"
+    start_dt = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
 
-    # --- 方案 B：FinMind REST API（不需登入的公開 endpoint）---
+    # --- 方案 A：TaiwanFuturesDaily，data_id=VIX ---
     try:
-        start_dt = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-        url = "https://api.finmindtrade.com/api/v4/data"
         params = {
             "dataset": "TaiwanFuturesDaily",
             "data_id": "VIX",
             "start_date": start_dt,
         }
-        res = requests.get(url, params=params, timeout=15).json()
-        records = res.get("data", [])
+        res = requests.get(base_url, params=params, timeout=15)
+        res.raise_for_status()
+        records = res.json().get("data", [])
         if records:
-            # 依日期排序，取最新一筆收盤價
-            records_sorted = sorted(records, key=lambda x: x.get("date", ""))
-            latest = records_sorted[-1]
-            # FinMind 欄位：close
+            latest = sorted(records, key=lambda x: x.get("date", ""))[-1]
             val = float(latest.get("close", 0))
             if val > 0:
-                return round(val, 2), "FinMind"
+                return round(val, 2), f"FinMind TaiwanFuturesDaily（{latest.get('date','')}）"
     except Exception:
         pass
 
-    return None, None
+    # --- 方案 B：TaiwanVariousIndicators5Seconds，data_id=VIXTWN ---
+    try:
+        start_dt_short = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+        params = {
+            "dataset": "TaiwanVariousIndicators5Seconds",
+            "data_id": "VIXTWN",
+            "start_date": start_dt_short,
+        }
+        res = requests.get(base_url, params=params, timeout=15)
+        res.raise_for_status()
+        records = res.json().get("data", [])
+        if records:
+            latest = sorted(records, key=lambda x: x.get("date", ""))[-1]
+            val = float(latest.get("price", latest.get("close", 0)))
+            if val > 0:
+                return round(val, 2), f"FinMind Indicators（{latest.get('date','')}）"
+    except Exception:
+        pass
+
+    return None, "FinMind 兩個 dataset 均無回傳資料（可能為非交易日或 API 限流）"
 
 
 def fetch_market_data():
-    """三大市場恐慌指數抓取 - 多層備援版"""
+    """三大市場恐慌指數抓取"""
     v_us, v_tw, v_crypto = "N/A", "N/A", "N/A"
     errors = []
 
-    # 1. 美股 VIX（yfinance，穩定）
+    # 1. 美股 VIX（yfinance）
     try:
-        vix_ticker = yf.Ticker("^VIX")
-        hist_us = vix_ticker.history(period="5d")
+        hist_us = yf.Ticker("^VIX").history(period="5d")
         if not hist_us.empty:
             v_us = round(hist_us['Close'].iloc[-1], 2)
         else:
@@ -155,15 +146,12 @@ def fetch_market_data():
     except Exception as e:
         errors.append(f"美股 VIX 失敗: {e}")
 
-    # 2. 台指 VIXTWN（期交所 → FinMind 三層備援）
-    try:
-        val, source = fetch_vixtwn()
-        if val is not None:
-            v_tw = val
-        else:
-            errors.append("台指 VIXTWN：期交所與 FinMind 均無法取得資料")
-    except Exception as e:
-        errors.append(f"台指 VIXTWN 抓取過程錯誤: {e}")
+    # 2. 台指 VIXTWN（FinMind REST API 兩層備援）
+    val, source = fetch_vixtwn()
+    if val is not None:
+        v_tw = val
+    else:
+        errors.append(f"台指 VIXTWN 失敗：{source}")
 
     # 3. 加密貨幣 Fear & Greed Index
     try:
@@ -195,25 +183,34 @@ if st.button("🛰️ 更新披薩指數"):
     bar = st.progress(0)
     lvl, pct = get_pizza_intel(bar)
     if lvl is not None:
-        save_json(PIZZA_FILE, {"lvl": lvl, "pct": pct, "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")})
+        save_json(PIZZA_FILE, {
+            "lvl": lvl,
+            "pct": pct,
+            "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")
+        })
         st.rerun()
     bar.empty()
 
-st.markdown(f"""<div class="dashboard-card"><div style="display:flex; justify-content:space-around; text-align:center;">
-    <div><p class="market-label">DEFCON</p><p class="db-value" style="font-size:50px;">{saved_pizza['lvl']}</p></div>
-    <div><p class="market-label">PIZZA INDEX</p><p class="db-value" style="font-size:50px;">{int(saved_pizza['pct'])}%</p></div>
-    </div><p class="update-tag">最後更新：{saved_pizza['update_time']}</p></div>""", unsafe_allow_html=True)
+st.markdown(f"""
+    <div class="dashboard-card">
+        <div style="display:flex; justify-content:space-around; text-align:center;">
+            <div><p class="market-label">DEFCON</p><p class="db-value" style="font-size:50px;">{saved_pizza['lvl']}</p></div>
+            <div><p class="market-label">PIZZA INDEX</p><p class="db-value" style="font-size:50px;">{int(saved_pizza['pct'])}%</p></div>
+        </div>
+        <p class="update-tag">最後更新：{saved_pizza['update_time']}</p>
+    </div>""", unsafe_allow_html=True)
 
 # 市場區
 st.divider()
 st.subheader("📉 全球市場恐慌監控")
-saved_market = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"})
+saved_market = load_json(MARKET_FILE, {
+    "v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"
+})
 
 if st.button("📊 更新市場恐慌情報"):
     with st.spinner("抓取最新金融數據..."):
         v_us, v_tw, v_crypto, errors = fetch_market_data()
 
-        # 只要有任一數值就存檔（降低存檔門檻）
         any_success = any(v != "N/A" for v in [v_us, v_tw, v_crypto])
         if any_success:
             save_json(MARKET_FILE, {
@@ -224,15 +221,13 @@ if st.button("📊 更新市場恐慌情報"):
             })
 
         # 錯誤訊息直接顯示（不收進 expander，方便排查）
-        if errors:
-            with st.expander("⚠️ 偵錯詳情（點開查看）"):
-                for e in errors:
-                    st.warning(e)
+        for e in errors:
+            st.warning(f"⚠️ {e}")
 
         if any_success:
             st.rerun()
         else:
-            st.error("所有數據源均抓取失敗，請檢查網路或稍後再試。")
+            st.error("所有數據源均抓取失敗，請稍後再試。")
 
 m_col1, m_col2, m_col3 = st.columns(3)
 with m_col1:
@@ -240,21 +235,18 @@ with m_col1:
         f'<div class="dashboard-card" style="text-align:center;">'
         f'<p class="market-label">美股 VIX</p>'
         f'<p class="db-value" style="font-size:32px;">{saved_market["v_us"]}</p></div>',
-        unsafe_allow_html=True
-    )
+        unsafe_allow_html=True)
 with m_col2:
     st.markdown(
         f'<div class="dashboard-card" style="text-align:center;">'
         f'<p class="market-label">台指 VIXTWN</p>'
         f'<p class="db-value" style="font-size:32px;">{saved_market["v_tw"]}</p></div>',
-        unsafe_allow_html=True
-    )
+        unsafe_allow_html=True)
 with m_col3:
     st.markdown(
         f'<div class="dashboard-card" style="text-align:center;">'
         f'<p class="market-label">加密 F&G</p>'
         f'<p class="db-value" style="font-size:32px;">{saved_market["v_crypto"]}</p></div>',
-        unsafe_allow_html=True
-    )
+        unsafe_allow_html=True)
 
 st.caption(f"數據最後更新：{saved_market['update_time']}")
